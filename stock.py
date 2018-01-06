@@ -2,44 +2,39 @@
 import tensorflow as tf
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 
-# Import data
-data = pd.read_csv('teva.csv')
-data = data['Open'].values
+# Stock Prediction ANN Parameters
+DATA_CSV_PATH = r'Stock.csv'		# Path to a csv containing the historical stock data
+STOCK_PARAMETER = 'Open'			# The stock parameter to analyse and predict (Open\High\Low\Close) 
+SAMPLE_SIZE = 30					# The amount of consecutive samples in each input to the network (e.g last 30 days)
+PREDICTION_OFFSET = 10				# The offset for the network's prediction (e.g the stock's price in 10 days)
+TRAINING_SET_PERCENTAGE = 0.8		# The percentage of data to be used for training the network (The rest for testing)
+BATCH_SIZE = 16						# The size of each batch of inputs that are inserted into the network
+EPOCHS = 10							# The amount of epochs. In each epoch, the data is inserted into the network in multiple batches
 
-# Number of stocks in training data
-days_back = 30
-days_forward = 10
+# Import data: Take only the needed stock parameter from the csv
+data = pd.read_csv(DATA_CSV_PATH)[STOCK_PARAMETER].values
+
+# Create the samples from the raw data
 samples = []
-for i in range(days_back+days_forward, len(data)):
-	samples.append(data[i-days_back-days_forward:i])
+for i in range(SAMPLE_SIZE, len(data) - PREDICTION_OFFSET):
+	# Each sample contains the values from SAMPLE_SIZE consecutive days, and the stock value in PREDICTION_OFFSET days
+	samples.append(np.append(data[i-SAMPLE_SIZE:i], data[i+PREDICTION_OFFSET]))
 samples = np.array(samples)
-amount_of_samples = samples.shape[0]
 
-# Training and test data
-training_set_percentage = 0.8
-train_start = 0
-train_end = int(np.floor(training_set_percentage*amount_of_samples))
-test_start = train_end + 1
-test_end = amount_of_samples
-data_train = samples[np.arange(train_start, train_end), :]
-data_test = samples[np.arange(test_start, test_end), :]
+# Divide the samples into training samples and test samples
+train_end = int(np.floor(TRAINING_SET_PERCENTAGE*samples.shape[0]))
+data_train = samples[:train_end, :]
+data_test = samples[train_end+1:, :]
 
-# Scale data
-scaler = MinMaxScaler(feature_range=(-1, 1))
-scaler.fit(data_train)
-#data_train = scaler.transform(data_train)
-#data_test = scaler.transform(data_test)
+# Build inputs and outputs
+train_input = data_train[:, :-1]
+train_output = data_train[:, -1]
+test_input = data_test[:, :-1]
+test_output = data_test[:, -1]
 
-# Build X and y
-X_train = data_train[:, :(-1)*days_forward]
-y_train = data_train[:, -1]
-X_test = data_test[:, :(-1)*days_forward]
-y_test = data_test[:, -1]
-
-# Neurons
+# Amount of neurons in each of the four levels
 n_neurons_1 = 1024
 n_neurons_2 = 512
 n_neurons_3 = 256
@@ -49,16 +44,15 @@ n_neurons_4 = 128
 net = tf.Session()
 
 # Placeholder
-X = tf.placeholder(dtype=tf.float32, shape=[None, days_back])
+X = tf.placeholder(dtype=tf.float32, shape=[None, SAMPLE_SIZE])
 Y = tf.placeholder(dtype=tf.float32, shape=[None])
 
 # Initializers
-sigma = 1
-weight_initializer = tf.variance_scaling_initializer(mode="fan_avg", distribution="uniform", scale=sigma)
+weight_initializer = tf.variance_scaling_initializer(mode="fan_avg", distribution="uniform", scale=1)
 bias_initializer = tf.zeros_initializer()
 
 # Hidden weights
-W_hidden_1 = tf.Variable(weight_initializer([days_back, n_neurons_1]))
+W_hidden_1 = tf.Variable(weight_initializer([SAMPLE_SIZE, n_neurons_1]))
 bias_hidden_1 = tf.Variable(bias_initializer([n_neurons_1]))
 W_hidden_2 = tf.Variable(weight_initializer([n_neurons_1, n_neurons_2]))
 bias_hidden_2 = tf.Variable(bias_initializer([n_neurons_2]))
@@ -77,7 +71,7 @@ hidden_2 = tf.nn.relu(tf.add(tf.matmul(hidden_1, W_hidden_2), bias_hidden_2))
 hidden_3 = tf.nn.relu(tf.add(tf.matmul(hidden_2, W_hidden_3), bias_hidden_3))
 hidden_4 = tf.nn.relu(tf.add(tf.matmul(hidden_3, W_hidden_4), bias_hidden_4))
 
-# Output layer (transpose!)
+# Output layer
 out = tf.transpose(tf.add(tf.matmul(hidden_4, W_out), bias_out))
 
 # Cost function
@@ -93,44 +87,34 @@ net.run(tf.global_variables_initializer())
 plt.ion()
 fig = plt.figure()
 ax1 = fig.add_subplot(111)
-line1, = ax1.plot(y_test)
-line2, = ax1.plot(y_test * 0.5)
+line1, = ax1.plot(test_output)
+line2, = ax1.plot(test_output)
 plt.show()
 
-# Fit neural net
-batch_size = 16
-mse_train = []
-mse_test = []
-
 # Run
-epochs = 10
-for e in range(epochs):
-
+for e in range(EPOCHS):
 	# Shuffle training data
-	shuffle_indices = np.random.permutation(np.arange(len(y_train)))
-	X_train = X_train[shuffle_indices]
-	y_train = y_train[shuffle_indices]
-	
-	
-	for i in range(0, len(y_train) // batch_size):
-		start = i * batch_size
-		batch_x = X_train[start:start + batch_size]
-		batch_y = y_train[start:start + batch_size]
+	shuffle_indices = np.random.permutation(np.arange(len(train_output)))
+	train_input = train_input[shuffle_indices]
+	train_output = train_output[shuffle_indices]
+
+	# Run each batch
+	for i in range(0, len(train_output) // BATCH_SIZE):
+		start = i * BATCH_SIZE
+		batch_x = train_input[start:start + BATCH_SIZE]
+		batch_y = train_output[start:start + BATCH_SIZE]
 		# Run optimizer with batch
 		net.run(opt, feed_dict={X: batch_x, Y: batch_y})
 
-		# Show progress
-		if np.mod(i, 50) == 0:
-			# MSE train and test
-			mse_train.append(net.run(mse, feed_dict={X: X_train, Y: y_train}))
-			mse_test.append(net.run(mse, feed_dict={X: X_test, Y: y_test}))
-			print('MSE Train: ', mse_train[-1])
-			print('MSE Test: ', mse_test[-1])
-			# Prediction
-			shuffle_indices = np.random.permutation(np.arange(len(y_test)))
-			randomized_tests = X_test[shuffle_indices]
-			pred = net.run(out, feed_dict={X: randomized_tests})
-			pred = pred.T[np.argsort(shuffle_indices)].T
-			line2.set_ydata(pred)
-			plt.title('Epoch ' + str(e) + ', Batch ' + str(i))
-			plt.pause(0.01)
+	# Show progress
+	# MSE train and test
+	mse_train = net.run(mse, feed_dict={X: train_input, Y: train_output})
+	mse_test = net.run(mse, feed_dict={X: test_input, Y: test_output})
+	print('MSE Train: ', mse_train)
+	print('MSE Test: ', mse_test)
+	
+	# Prediction
+	pred = net.run(out, feed_dict={X: test_input})
+	line2.set_ydata(pred)
+	plt.title('Epoch ' + str(e))
+	plt.pause(0.01)
